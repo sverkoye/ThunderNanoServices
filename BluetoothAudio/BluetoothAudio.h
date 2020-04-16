@@ -165,9 +165,20 @@ namespace Plugin {
                 {
                     TRACE(SDPFlow, (_T("The Bluetooth device is operational; start discovery!")));
 
-                    _profile.Discover(CommunicationTimeout * 20, *this, { Bluetooth::SDPSocket::Profile::AudioSink }, [&](const uint32_t result) {
+                    _explorer.Discover(CommunicationTimeout * 20, *this, { Bluetooth::Explorer::AudioSink }, [&](const uint32_t result) {
                         if (result == Core::ERROR_NONE) {
-                            TRACE(SDPFlow, (_T("Found %d audio sink service(s)"), _profile.Services().size()));
+                            TRACE(SDPFlow, (_T("Found %d audio sink service(s)"), _explorer.Services().size()));
+                            uint16_t cnt = 1;
+                            for (auto& service : _explorer.Services()) {
+                                TRACE(SDPFlow, (_T("Service %i"), cnt));
+                                TRACE(SDPFlow, (_T("  Handle: 0x%08x"), service.ServiceRecordHandle()));
+                                for (auto& classId : service.ServiceClassIDList()) {
+                                    TRACE(SDPFlow, (_T("  Class ID: %s"), classId.ToString().c_str()));
+                                }
+                                for (auto& profileDescriptor : service.BluetoothProfileDescriptorList()) {
+                                    TRACE(SDPFlow, (_T("  Profile: %s, version: %04x"), profileDescriptor.first.ToString().c_str(), profileDescriptor.second));
+                                }
+                            }
                         } else {
                             TRACE(Trace::Error, (_T("SDP discovery failed [%d]"), result));
                         }
@@ -197,8 +208,8 @@ namespace Plugin {
                 Exchange::IBluetooth::IDevice* _device;
                 Core::Sink<DeviceCallback> _callback;
                 Core::CriticalSection _lock;
-                SDPSocket::Command _command;
-                SDPSocket::Profile _profile;
+                Bluetooth::SDPSocket::Command _command;
+                Bluetooth::Explorer _explorer;
             }; // class ServiceDiscovery
 
         public:
