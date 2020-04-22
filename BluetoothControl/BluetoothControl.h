@@ -1449,6 +1449,7 @@ class BluetoothControl : public PluginHost::IPlugin
                     result = BluetoothControl::Connector().Exchange(MAX_ACTION_TIMEOUT, disconnect, disconnect);
                     if (result != Core::ERROR_NONE) {
                         TRACE(ControlFlow, (_T("Failed to disconnect. Error [%d]"), result));
+                        ClearState(DISCONNECTING);
                     }
                 }
 
