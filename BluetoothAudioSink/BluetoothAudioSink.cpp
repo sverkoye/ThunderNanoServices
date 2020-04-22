@@ -17,16 +17,16 @@
  * limitations under the License.
  */
 
-#include "BluetoothAudio.h"
+#include "BluetoothAudioSink.h"
 
 
 namespace WPEFramework {
 
 namespace Plugin {
 
-    SERVICE_REGISTRATION(BluetoothAudio, 1, 0);
+    SERVICE_REGISTRATION(BluetoothAudioSink, 1, 0);
 
-    /* virtual */ const string BluetoothAudio::Initialize(PluginHost::IShell* service)
+    /* virtual */ const string BluetoothAudioSink::Initialize(PluginHost::IShell* service)
     {
         ASSERT(_service == nullptr);
         ASSERT(service != nullptr);
@@ -40,45 +40,35 @@ namespace Plugin {
         config.FromString(_service->ConfigLine());
         _controller = config.Controller.Value();
 
-        _audioSink = Core::Service<AudioSink>::Create<Exchange::IBluetoothAudioSink>(this);
-        if (_audioSink != nullptr) {
-            Exchange::JBluetoothAudioSink::Register(*this, _audioSink);
-        } else {
-            TRACE(Trace::Error, (_T("Failed to create audio sink implementation")));
-            error = "Failed to create audio sink";
-        }
+        Exchange::JBluetoothAudioSink::Register(*this, this);
 
         return {};
     }
 
-    /* virtual */ void BluetoothAudio::Deinitialize(PluginHost::IShell* service)
+    /* virtual */ void BluetoothAudioSink::Deinitialize(PluginHost::IShell* service)
     {
         ASSERT(_service == service);
 
-        if (_audioSink != nullptr) {
-            Exchange::JBluetoothAudioSink::Unregister(*this);
-            _audioSink->Release();
-            _audioSink = nullptr;
-        }
+        Exchange::JBluetoothAudioSink::Unregister(*this);
 
         _service->Release();
         _service = nullptr;
     }
 
-    /* virtual */ uint32_t BluetoothAudio::AudioSink::Assign(const string& address)
+    /* virtual */ uint32_t BluetoothAudioSink::Assign(const string& address)
     {
         uint32_t result = Core::ERROR_ALREADY_CONNECTED;
 
-        if (_sdp == nullptr) {
-            Exchange::IBluetooth* bluetoothCtl(_parent.Controller());
+        if (_sink == nullptr) {
+            Exchange::IBluetooth* bluetoothCtl(Controller());
             if (bluetoothCtl != nullptr) {
                 Exchange::IBluetooth::IDevice* device = bluetoothCtl->Device(address);
                 if (device != nullptr) {
-                    _sdp = new ServiceExplorer(this, device);
-                    if (_sdp != nullptr) {
+                    _sink = new A2DPSink(this, device);
+                    if (_sink != nullptr) {
                         result = Core::ERROR_NONE;
                     } else {
-                        TRACE(Trace::Error, (_T("Failed to create SDP service explorer")));
+                        TRACE(Trace::Error, (_T("Failed to create audio sink")));
                         result = Core::ERROR_GENERAL;
                     }
                 } else {
@@ -98,9 +88,10 @@ namespace Plugin {
         return (result);
     }
 
-    /* virtual */ uint32_t BluetoothAudio::AudioSink::Revoke(const string& device)
+    /* virtual */ uint32_t BluetoothAudioSink::Revoke(const string& device)
     {
         uint32_t result = Core::ERROR_NONE;
+        // TODO
         return (result);
     }
 

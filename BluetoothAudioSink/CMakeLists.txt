@@ -15,7 +15,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set(PLUGIN_NAME BluetoothAudio)
+set(PLUGIN_NAME BluetoothAudioSink)
 set(MODULE_NAME ${NAMESPACE}${PLUGIN_NAME})
 
 find_package(${NAMESPACE}Bluetooth REQUIRED)
@@ -25,7 +25,7 @@ find_package(CompileSettingsDebug CONFIG REQUIRED)
 
 
 add_library(${MODULE_NAME} SHARED
-    BluetoothAudio.cpp
+    BluetoothAudioSink.cpp
     Module.cpp)
 
 set_target_properties(${MODULE_NAME} PROPERTIES
