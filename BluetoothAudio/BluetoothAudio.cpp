@@ -74,11 +74,11 @@ namespace Plugin {
             if (bluetoothCtl != nullptr) {
                 Exchange::IBluetooth::IDevice* device = bluetoothCtl->Device(address);
                 if (device != nullptr) {
-                    _sdp = new ServiceDiscovery(this, device);
+                    _sdp = new ServiceExplorer(this, device);
                     if (_sdp != nullptr) {
                         result = Core::ERROR_NONE;
                     } else {
-                        TRACE(Trace::Error, (_T("Failed to create SDP service discovery")));
+                        TRACE(Trace::Error, (_T("Failed to create SDP service explorer")));
                         result = Core::ERROR_GENERAL;
                     }
                 } else {
