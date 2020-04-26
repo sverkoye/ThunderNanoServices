@@ -52,6 +52,54 @@ namespace Plugin {
             Core::JSON::String Controller;
         }; // class Config
 
+        class DispatchJob {
+        private:
+            class Job : public Core::IDispatch {
+            public:
+                Job(DispatchJob& parent)
+                    :_parent(parent)
+                {
+                }
+                ~Job() = default;
+
+            public:
+                void Dispatch() override
+                {
+                    _parent.Trigger();
+                }
+
+            private:
+                DispatchJob& _parent;
+            };
+
+        public:
+            using Handler = std::function<void()>;
+
+        public:
+            DispatchJob(const DispatchJob&) = delete;
+            DispatchJob& operator=(const DispatchJob&) = delete;
+
+            DispatchJob(const Handler& handler)
+                : _handler(handler)
+                , _job(Core::ProxyType<Job>::Create(*this))
+            {
+                Core::IWorkerPool::Instance().Submit(Core::ProxyType<Core::IDispatch>(_job));
+            }
+
+        private:
+           ~DispatchJob() = default;
+
+            void Trigger()
+            {
+                _handler();
+                delete this;
+            }
+
+        private:
+            Handler _handler;
+            Core::ProxyType<Job> _job;
+        }; // class DispatchJob
+
         class A2DPSink {
         private:
             class A2DPFlow {
@@ -113,6 +161,12 @@ namespace Plugin {
                 A2DPSink& _parent;
             }; // class DeviceCallback
 
+            static Core::NodeId Designator(const Exchange::IBluetooth::IDevice* device, const bool local, const uint16_t psm = 0)
+            {
+                ASSERT(device != nullptr);
+                return (Bluetooth::Address((local? device->LocalId() : device->RemoteId()).c_str()).NodeId(static_cast<Bluetooth::Address::type>(device->Type()), 0 /* must be zero */, psm));
+            }
+
             class ServiceExplorer : public Bluetooth::SDPSocket {
             private:
                 class SDPFlow {
@@ -158,9 +212,10 @@ namespace Plugin {
 
                 public:
                     enum type {
-                        INVALID = 0,
+                        UNKNOWN = 0,
                         SOURCE  = 1,
-                        SINK    = 2
+                        SINK    = 2,
+                        NEITHER = 3
                     };
 
                     enum features : uint16_t {
@@ -181,13 +236,15 @@ namespace Plugin {
                         , _avdtpVersion(0)
                         , _a2dpVersion(0)
                         , _features(NONE)
-                        , _type(INVALID)
+                        , _type(UNKNOWN)
                     {
                     }
                     AudioService(const Bluetooth::SDPProfile::Service& service)
                         : AudioService()
                     {
                         using SDPProfile = Bluetooth::SDPProfile;
+
+                        _type = NEITHER;
 
                         const SDPProfile::ProfileDescriptor* a2dp = service.Profile(ClassID::AdvancedAudioDistribution);
                         ASSERT(a2dp != nullptr);
@@ -209,7 +266,7 @@ namespace Plugin {
                                     params.Pop(SDPSocket::use_descriptor, _avdtpVersion);
                                     ASSERT(_avdtpVersion != 0);
 
-                                    // By now it's A2DP service using L2CAP and AVDTP protocols; finally confirm class ID
+                                    // It's a A2DP service using L2CAP and AVDTP protocols; finally confirm its class ID
                                     if (service.IsClassSupported(ClassID::AudioSink)) {
                                         _type = SINK;
                                     } else if (service.IsClassSupported(ClassID::AudioSource)) {
@@ -267,13 +324,8 @@ namespace Plugin {
                 ServiceExplorer(const ServiceExplorer&) = delete;
                 ServiceExplorer& operator=(const ServiceExplorer&) = delete;
 
-                static Core::NodeId Designator(const uint8_t type, const string& address)
-                {
-                    return (Bluetooth::Address(address.c_str()).NodeId(static_cast<Bluetooth::Address::type>(type), 0, SDPSocket::SDP_PSM /* a well known PSM */));
-                }
-
-                ServiceExplorer(A2DPSink* parent, Exchange::IBluetooth::IDevice* device)
-                    : Bluetooth::SDPSocket(Designator(device->Type(), device->LocalId()), Designator(device->Type(), device->RemoteId()), 255)
+                ServiceExplorer(A2DPSink* parent, Exchange::IBluetooth::IDevice* device, const uint16_t psm = SDP_PSM /* a well-known PSM */)
+                    : Bluetooth::SDPSocket(Designator(device, true, psm), Designator(device, false, psm), 255)
                     , _parent(*parent)
                     , _device(device)
                     , _lock()
@@ -283,21 +335,11 @@ namespace Plugin {
                     ASSERT(device != nullptr);
 
                     _device->AddRef();
-
-                    uint32_t result = SDPSocket::Open(5000);
-                    if (result != Core::ERROR_NONE) {
-                        TRACE(Trace::Error, (_T("Failed to open SDP socket to %s"), _device->RemoteId().c_str()));
-                    }
                 }
                 ~ServiceExplorer() override
                 {
-                    if (SDPSocket::IsOpen() == true) {
-                        SDPSocket::Close(Core::infinite);
-                    }
-
+                    Disconnect();
                     _device->Release();
-
-                    TRACE(SDPFlow, (_T("Service discovery closed")));
                 }
 
             private:
@@ -309,35 +351,70 @@ namespace Plugin {
 
                 void Operational() override
                 {
-                    TRACE(SDPFlow, (_T("The Bluetooth device is operational for service discovery!")));
-                    Discover();
+                    TRACE(SDPFlow, (_T("Bluetooth SDP connection is operational")));
+                }
+
+            public:
+                 uint32_t Connect()
+                {
+                    uint32_t result = Open(1000);
+                    if (result != Core::ERROR_NONE) {
+                        TRACE(Trace::Error, (_T("Failed to open SDP socket to %s [%d]"), _device->RemoteId().c_str(), result));
+                    } else {
+                        TRACE(SDPFlow, (_T("Successfully opened SDP socket to %s"), _device->RemoteId().c_str()));
+                    }
+
+                    return (result);
+                }
+                uint32_t Disconnect()
+                {
+                    uint32_t result = Core::ERROR_NONE;
+
+                    if (IsOpen() == true) {
+                        result = Close(5000);
+                        if (result != Core::ERROR_NONE) {
+                            TRACE(Trace::Error, (_T("Failed to close SDP socket to %s [%d]"), _device->RemoteId().c_str(), result));
+                        } else {
+                            TRACE(SDPFlow, (_T("Successfully closed SDP socket to %s"), _device->RemoteId().c_str()));
+                        }
+                    }
+
+                    return (result);
+                }
+                void Discover()
+                {
+                    if (SDPSocket::IsOpen() == true) {
+                        _profile.Discover((CommunicationTimeout * 20), *this, std::list<Bluetooth::UUID>{ ClassID::AudioSink }, [&](const uint32_t result) {
+                            if (result == Core::ERROR_NONE) {
+                                TRACE(SDPFlow, (_T("Service discovery complete")));
+
+                                _lock.Lock();
+
+                                DumpProfile();
+
+                                if (_profile.Services().empty() == false) {
+                                    for (auto const& service : _profile.Services()) {
+                                        if (service.IsClassSupported(ClassID::AudioSink) == true) {
+                                            _audioServices.emplace_back(service);
+                                        }
+                                    }
+
+                                    new DispatchJob([this]() {
+                                        _parent.AudioServices(_audioServices);
+                                    });
+                                } else {
+                                    TRACE(Trace::Information, (_T("Not an A2DP audio sink device!")));
+                                }
+
+                                _lock.Unlock();
+                            } else {
+                                TRACE(Trace::Error, (_T("SDP service discovery failed [%d]"), result));
+                            }
+                        });
+                    }
                 }
 
             private:
-                void Discover()
-                {
-                    _profile.Discover((CommunicationTimeout * 20), *this, std::list<Bluetooth::UUID>{ ClassID::AudioSink }, [&](const uint32_t result) {
-                        if (result == Core::ERROR_NONE) {
-                            TRACE(SDPFlow, (_T("Service discovery complete")));
-
-                            DumpProfile();
-
-                            if (_profile.Services().empty() == false) {
-                                for (auto const& service : _profile.Services()) {
-                                    if (service.IsClassSupported(ClassID::AudioSink) == true) {
-                                        _audioServices.emplace_back(service);
-                                    }
-                                }
-
-                                _parent.AudioServices(_audioServices);
-                            } else {
-                                TRACE(Trace::Information, (_T("Not an A2DP audio sink device!")));
-                            }
-                        } else {
-                            TRACE(Trace::Error, (_T("SDP service discovery failed [%d]"), result));
-                        }
-                    });
-                }
                 void DumpProfile() const
                 {
                     TRACE(SDPFlow, (_T("Discovered %d service(s)"),
@@ -421,38 +498,23 @@ namespace Plugin {
                 AudioReceiver(const AudioReceiver&) = delete;
                 AudioReceiver& operator=(const AudioReceiver&) = delete;
 
-                static Core::NodeId Designator(const uint8_t type, const string& address, uint16_t psm)
-                {
-                    return (Bluetooth::Address(address.c_str()).NodeId(static_cast<Bluetooth::Address::type>(type), 0, psm));
-                }
-
-                AudioReceiver(A2DPSink* parent, Exchange::IBluetooth::IDevice* device, const uint16_t psm)
-                    : Bluetooth::AVDTPSocket(Designator(device->Type(), device->LocalId(), psm), Designator(device->Type(), device->RemoteId(), psm), 255)
+                AudioReceiver(A2DPSink* parent, Exchange::IBluetooth::IDevice* device)
+                    : Bluetooth::AVDTPSocket(Designator(device, true), Designator(device, false), 255)
                     , _parent(*parent)
                     , _device(device)
                     , _lock()
+                    , _status(Exchange::IBluetoothAudioSink::UNASSIGNED)
                 {
                     ASSERT(parent != nullptr);
                     ASSERT(device != nullptr);
 
                     _device->AddRef();
-
-                    uint32_t result = AVDTPSocket::Open(5000);
-                    if (result != Core::ERROR_NONE) {
-                        TRACE(Trace::Error, (_T("Failed to open AVDTP socket to %s"), _device->RemoteId().c_str()));
-                    } else {
-                        TRACE(AVDTPFlow, (_T("Successfully opened AVDTP socket to %s"), _device->RemoteId().c_str()));
-                    }
+                    Status(DISCONNECTED);
                 }
                 ~AudioReceiver() override
                 {
-                    if (AVDTPSocket::IsOpen() == true) {
-                        AVDTPSocket::Close(Core::infinite);
-                    }
-
+                    Disconnect();
                     _device->Release();
-
-                    TRACE(AVDTPFlow, (_T("Audio transport closed")));
                 }
 
             private:
@@ -463,13 +525,63 @@ namespace Plugin {
 
                 void Operational() override
                 {
-                    TRACE(AVDTPFlow, (_T("The Bluetooth device is operational; start audio transmission!")));
+                    TRACE(AVDTPFlow, (_T("Bluetooth AVDTP connection is operational")));
+                    Status(Exchange::IBluetoothAudioSink::IDLE);
+                }
+
+            public:
+                uint32_t Connect(const uint16_t psm)
+                {
+                    RemoteNode(Designator(_device, false, psm));
+
+                    uint32_t result = Open(1000);
+                    if (result != Core::ERROR_NONE) {
+                        TRACE(Trace::Error, (_T("Failed to open AVDTP socket to %s [%d]"), _device->RemoteId().c_str(), result));
+                    } else {
+                        TRACE(AVDTPFlow, (_T("Successfully opened AVDTP socket to %s"), _device->RemoteId().c_str()));
+                    }
+
+                    return (result);
+                }
+                uint32_t Disconnect()
+                {
+                    uint32_t result = Core::ERROR_NONE;
+
+                    if (IsOpen() == true) {
+                        result = Close(5000);
+                        if (result != Core::ERROR_NONE) {
+                            TRACE(Trace::Error, (_T("Failed to close AVDTP socket to %s [%d]"), _device->RemoteId().c_str(), result));
+                        } else {
+                            TRACE(AVDTPFlow, (_T("Successfully closed AVDTP socket to %s"), _device->RemoteId().c_str()));
+                        }
+                    }
+
+                    Status(Exchange::IBluetoothAudioSink::DISCONNECTED);
+
+                    return (result);
+                }
+                Exchange::IBluetoothAudioSink::status Status() const
+                {
+                    return (_status);
+                }
+
+            private:
+                void Status(const Exchange::IBluetoothAudioSink::status newStatus)
+                {
+                    _lock.Lock();
+                    if (_status != newStatus) {
+                        _status = newStatus;
+                        Core::EnumerateType<JsonData::BluetoothAudioSink::StatusType> value(static_cast<Exchange::IBluetoothAudioSink::status>(_status));
+                        TRACE(Trace::Information, (_T("Audio sink status: %s"), (value.IsSet()? value.Data() : "(undefined)")));
+                    }
+                    _lock.Unlock();
                 }
 
             private:
                 A2DPSink& _parent;
                 Exchange::IBluetooth::IDevice* _device;
                 Core::CriticalSection _lock;
+                Exchange::IBluetoothAudioSink::status _status;
             }; // class AudioReceiver
 
         public:
@@ -480,8 +592,8 @@ namespace Plugin {
                 , _device(device)
                 , _callback(this)
                 , _lock()
-                , _sdp(nullptr)
-                , _avdtp(nullptr)
+                , _explorer(this, _device)
+                , _receiver(this, _device)
             {
                 ASSERT(parent != nullptr);
                 ASSERT(device != nullptr);
@@ -503,56 +615,70 @@ namespace Plugin {
                     TRACE(Trace::Fatal, (_T("Could not remove the callback from the device")));
                 }
 
-                if (_sdp != nullptr) {
-                    delete _sdp;
-                }
-
-                if (_avdtp != nullptr) {
-                    delete _avdtp;
-                }
-
                 _device->Release();
             }
 
         public:
             void DeviceUpdated()
             {
-                if (_device->IsConnected() == true) {
-                    if (_audioService.Type() == ServiceExplorer::AudioService::INVALID) {
-                        TRACE(A2DPFlow, (_T("Device connected, attempt audio sink discovery...")));
-                        _sdp = new ServiceExplorer(this, _device);
-                        ASSERT(_sdp != nullptr);
+                if (_device->IsBonded() == true) {
+                    _lock.Lock();
+
+                    if (_device->IsConnected() == true) {
+                        if (_audioService.Type() == ServiceExplorer::AudioService::UNKNOWN) {
+                            TRACE(A2DPFlow, (_T("Unknown device connected, attempt audio sink discovery...")));
+                            // Device features are unknown at this point, so first try service discovery
+                            if (_explorer.Connect() == Core::ERROR_NONE) {
+                                _explorer.Discover();
+                            }
+                        } else if (_audioService.Type() == ServiceExplorer::AudioService::SINK) {
+                            // We already know it's an audio sink, connect to transport service right away
+                            TRACE(A2DPFlow, (_T("Audio sink device connected, start audio receiver...")));
+                            _receiver.Connect(_audioService.PSM());
+                        } else {
+                            // It's not an audio sink device, can't do anything
+                            TRACE(Trace::Information, (_T("Connected device does not feature an audio sink!")));
+                        }
+                    } else {
+                        TRACE(A2DPFlow, (_T("Device diconnected")));
+                        _audioService = ServiceExplorer::AudioService();
+                        _explorer.Disconnect();
+                        _receiver.Disconnect();
                     }
 
-                    // TODO: chain this differently
-
-                    if (_audioService.Type() == ServiceExplorer::AudioService::SINK) {
-                        TRACE(A2DPFlow, (_T("Device connected, audio sink present, start audio receiver service...")));
-                        _avdtp = new AudioReceiver(this, _device, _audioService.PSM());
-                        ASSERT(_avdtp != nullptr);
-                    }
-                } else {
-                    if (_sdp != nullptr) {
-                        delete _sdp;
-                        _sdp = nullptr;
-                    }
-                    if (_avdtp != nullptr) {
-                        delete _avdtp;
-                        _avdtp = nullptr;
-                    }
+                    _lock.Unlock();
                 }
             }
 
         public:
+            Exchange::IBluetoothAudioSink::status Status() const
+            {
+                return (_receiver.Status());
+            }
+
+        private:
             void AudioServices(const std::list<ServiceExplorer::AudioService>& services)
             {
                 ASSERT(services.empty() == false);
 
-                _audioService = services.front(); // disregard possibility of multiple sink services for now
+                if (services.size() > 1) {
+                    TRACE(Trace::Information, (_T("More than one audio sink available, using the first one!")));
+                }
+
+                _lock.Lock();
+
+                _explorer.Disconnect(); // done with SDP
+
+                 _audioService = services.front(); // disregard possibility of multiple sink services for now
                 TRACE(Trace::Information, (_T("Audio sink service available! A2DP v%d.%d, AVDTP v%d.%d, L2CAP PSM: %i, features: 0b%s"),
                                            (_audioService.ProfileVersion() >> 8), (_audioService.ProfileVersion() & 0xFF),
                                            (_audioService.TransportVersion() >> 8), (_audioService.TransportVersion() & 0xFF),
                                            _audioService.PSM(), std::bitset<8>(_audioService.Features()).to_string().c_str()));
+
+                TRACE(A2DPFlow, (_T("Audio sink device discovered, start audio receiver...")));
+                _receiver.Connect(_audioService.PSM());
+
+                _lock.Unlock();
             }
 
         private:
@@ -561,8 +687,8 @@ namespace Plugin {
             Core::Sink<DeviceCallback> _callback;
             Core::CriticalSection _lock;
             ServiceExplorer::AudioService _audioService;
-            ServiceExplorer* _sdp;
-            AudioReceiver* _avdtp;
+            ServiceExplorer _explorer;
+            AudioReceiver _receiver;
         }; // class A2DPSink
 
     public:
@@ -588,6 +714,15 @@ namespace Plugin {
         // IBluetoothAudioSink overrides
         uint32_t Assign(const string& device) override;
         uint32_t Revoke(const string& device) override;
+        uint32_t Status(Exchange::IBluetoothAudioSink::status& sinkStatus) const
+        {
+            if (_sink) {
+                sinkStatus =_sink->Status();
+            } else {
+                sinkStatus = Exchange::IBluetoothAudioSink::UNASSIGNED;
+            }
+            return (Core::ERROR_NONE);
+        }
 
     public:
         Exchange::IBluetooth* Controller() const

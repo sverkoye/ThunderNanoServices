@@ -90,7 +90,15 @@ namespace Plugin {
 
     /* virtual */ uint32_t BluetoothAudioSink::Revoke(const string& device)
     {
-        uint32_t result = Core::ERROR_NONE;
+        uint32_t result = Core::ERROR_ALREADY_RELEASED;
+
+        if (_sink != nullptr) {
+            delete _sink;
+            _sink = nullptr;
+            result = Core::ERROR_NONE;
+        } else {
+            TRACE(Trace::Error, (_T("Sink not assigned, assign first")));
+        }
         // TODO
         return (result);
     }
