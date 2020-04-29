@@ -27,6 +27,8 @@
 #include <interfaces/IBluetoothAudio.h>
 #include <interfaces/JBluetoothAudioSink.h>
 
+#include "Module.h"
+
 
 namespace WPEFramework {
 
@@ -417,12 +419,11 @@ namespace Plugin {
             private:
                 void DumpProfile() const
                 {
-                    TRACE(SDPFlow, (_T("Discovered %d service(s)"),
-                                    _profile.Services().size(), _profile.Class().Name().c_str()));
+                    TRACE(SDPFlow, (_T("Discovered %d service(s)"), _profile.Services().size()));
 
                     uint16_t cnt = 1;
                     for (auto const& service : _profile.Services()) {
-                        TRACE(SDPFlow, (_T("Service %i"), cnt));
+                        TRACE(SDPFlow, (_T("Service #%i"), cnt++));
                         TRACE(SDPFlow, (_T("  Handle: 0x%08x"), service.Handle()));
 
                         if (service.Classes().empty() == false) {
@@ -446,6 +447,14 @@ namespace Plugin {
                                 TRACE(SDPFlow, (_T("    - %s '%s', parameters: %s"),
                                                 protocol.Type().ToString().c_str(), protocol.Name().c_str(),
                                                 protocol.Parameters().ToString().c_str()));
+                            }
+                        }
+                        if (service.Attributes().empty() == false) {
+                            TRACE(SDPFlow, (_T("  Attributes:")));
+                            for (auto const& attribute : service.Attributes()) {
+                                TRACE(SDPFlow, (_T("    - %04x '%s', value: %s"),
+                                                attribute.second.Type(), attribute.second.Name().c_str(),
+                                                attribute.second.Value().ToString().c_str()));
                             }
                         }
                     }
@@ -494,6 +503,147 @@ namespace Plugin {
                 }; // class AVDTPFlow
 
             public:
+                enum contentprotection : uint16_t {
+                    NONE    = 0x0000,
+                    DTC     = 0x0001,
+                    SCMS_T  = 0x0002
+                };
+
+                enum mediatype : uint8_t {
+                    AUDIO           = 0x00
+                };
+
+                enum audiocodec : uint8_t {
+                    SBC             = 0x00, // mandatory
+                    MPEG2_AUDIO     = 0x01,
+                    MPEG4_AAC       = 0x02,
+                    ATRAC_FAMILY    = 0x03,
+                    INVALID         = 0xFE,
+                    NON_A2DP        = 0xFF
+                };
+
+                class SBCAudioSEP {
+                public:
+                    enum samplingfrequency : uint8_t {
+                        HZ_48000        = 1, // mandatory for sink
+                        HZ_44100        = 2, // mandatory for sink
+                        HZ_32000        = 4,
+                        HZ_16000        = 8
+                    };
+
+                    enum channelmode : uint8_t {
+                        JOINT_STEREO    = 1, // all mandatory for sink
+                        STEREO          = 2,
+                        DUAL_CHANNEL    = 4,
+                        MONO            = 8
+                    };
+
+                    enum blocklength : uint8_t {
+                        BL16            = 1,  // all mandatory for sink
+                        BL12            = 2,
+                        BL8             = 4,
+                        BL4             = 8,
+                    };
+
+                    enum subbands : uint8_t {
+                        SB8             = 1, // all mandatory for sink
+                        SB4             = 2,
+                    };
+
+                    enum allocationmethod : uint8_t {
+                        SNR             = 1, // all mandatory for sink
+                        LOUDNESS        = 2,
+                    };
+
+                public:
+                    SBCAudioSEP(const Bluetooth::AVDTPProfile::StreamEndPoint& sep, const string& params)
+                        : _seid(sep.SEID())
+                        , _cp()
+                        , _samplingFrequency()
+                        , _channelMode()
+                        , _blockLength()
+                        , _subBands()
+                        , _allocationMethod()
+                        , _minBitpool(0)
+                        , _maxBitpool(0)
+                    {
+                        Bluetooth::Record data(params);
+                        uint8_t byte{};
+                        data.Pop(byte);
+                        _samplingFrequency = (byte >> 4);
+                        _channelMode = (byte & 0xFF);
+                        data.Pop(byte);
+                        _blockLength = (byte >> 4);
+                        _subBands = ((byte >> 2) & 0x3);
+                        _allocationMethod = (0x3);
+                        data.Pop(_minBitpool);
+                        data.Pop(_maxBitpool);
+                    }
+
+                public:
+                    contentprotection ContentProtection() const
+                    {
+                        return (_cp);
+                    }
+                    uint8_t SamplingFrequency() const
+                    {
+                        return (_samplingFrequency);
+                    }
+                    uint8_t ChannelMode() const
+                    {
+                        return (_channelMode);
+                    }
+                    uint8_t BlockLength() const
+                    {
+                        return (_blockLength);
+                    }
+                    uint8_t SubBands() const
+                    {
+                        return (_subBands);
+                    }
+                    uint8_t AllocationMethod() const
+                    {
+                        return (_allocationMethod);
+                    }
+                    std::pair<uint8_t, uint8_t> Bitpool() const
+                    {
+                        return (std::make_pair(_minBitpool, _maxBitpool));
+                    }
+
+                public:
+                    void Configure(const samplingfrequency frequency, const channelmode mode, const blocklength bl,
+                                   const subbands subBands, const allocationmethod method)
+                    {
+                        uint8_t scratchpad[256];
+                        Bluetooth::Record msg(scratchpad, sizeof(scratchpad));
+
+                        msg.Push(Bluetooth::AVDTPProfile::StreamEndPoint::ServiceCapabilities::MEDIA_TRANSPORT);
+                        msg.Push(static_cast<uint8_t>(0));
+
+                        msg.Push(Bluetooth::AVDTPProfile::StreamEndPoint::ServiceCapabilities::MEDIA_CODEC);
+                        msg.Push(static_cast<uint8_t>(6));
+                        msg.Push(AUDIO);
+                        msg.Push(SBC);
+                        uint8_t data{};
+                        data = ((static_cast<uint8_t>(frequency) << 4) | static_cast<uint8_t>(mode));
+                        msg.Push(data);
+                        data = ((static_cast<uint8_t>(bl) << 4) | (static_cast<uint8_t>(subBands) << 2) | static_cast<uint8_t>(subBands));
+                        msg.Push(data);
+                    }
+
+                private:
+                    uint8_t _seid;
+                    contentprotection _cp;
+                    uint8_t _samplingFrequency;
+                    uint8_t _channelMode;
+                    uint8_t _blockLength;
+                    uint8_t _subBands;
+                    uint8_t _allocationMethod;
+                    uint8_t _minBitpool;
+                    uint8_t _maxBitpool;
+                }; // class SBCAudioSEP
+
+            public:
                 AudioReceiver() = delete;
                 AudioReceiver(const AudioReceiver&) = delete;
                 AudioReceiver& operator=(const AudioReceiver&) = delete;
@@ -504,6 +654,9 @@ namespace Plugin {
                     , _device(device)
                     , _lock()
                     , _status(Exchange::IBluetoothAudioSink::UNASSIGNED)
+                    , _command()
+                    , _profile()
+                    , _sbcAudioEndpoints()
                 {
                     ASSERT(parent != nullptr);
                     ASSERT(device != nullptr);
@@ -522,11 +675,48 @@ namespace Plugin {
                 {
                     return (true);
                 }
-
                 void Operational() override
                 {
                     TRACE(AVDTPFlow, (_T("Bluetooth AVDTP connection is operational")));
                     Status(Exchange::IBluetoothAudioSink::IDLE);
+                }
+
+            public:
+                void Discover() {
+                    _profile.Discover(2000, *this, [&](const uint32_t result) {
+                        if (result == Core::ERROR_NONE) {
+                            TRACE(AVDTPFlow, (_T("Stream endpoint discovery complete")));
+                            DumpProfile();
+
+                            for (auto const& sep : _profile.StreamEndPoints()) {
+                                if ((sep.MediaType() == Bluetooth::AVDTPProfile::StreamEndPoint::AUDIO)
+                                        && (sep.ServiceType() == Bluetooth::AVDTPProfile::StreamEndPoint::SINK)) {
+
+                                    auto it = sep.Capabilities().find(Bluetooth::AVDTPProfile::StreamEndPoint::ServiceCapabilities::MEDIA_CODEC);
+                                    if (it != sep.Capabilities().end()) {
+                                        Bluetooth::Record data((*it).second.Data());
+                                        mediatype mediaType{};
+                                        data.Pop(mediaType);
+                                        if ((mediaType == AUDIO) && (data.Available() >= 5)) {
+                                            uint8_t codec{};
+                                            string parameters;
+                                            data.Pop(codec);
+                                            data.Pop(parameters, data.Available());
+
+                                            if (codec == SBC) {
+                                                TRACE(Trace::Information, (_T("SBC audio sink stream endpoint available! SEID: 0x%02x"), sep.SEID()));
+                                                _sbcAudioEndpoints.emplace_back(sep, parameters);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (_sbcAudioEndpoints.empty() == true) {
+                                TRACE(Trace::Information, (_T("No SBC audio sink stream endpoints available")));
+                            }
+                        }
+                    });
                 }
 
             public:
@@ -576,12 +766,36 @@ namespace Plugin {
                     }
                     _lock.Unlock();
                 }
+                void DumpProfile() const
+                {
+                    TRACE(AVDTPFlow, (_T("Discovered %d stream endpoints(s)"), _profile.StreamEndPoints().size()));
+
+                    uint16_t cnt = 1;
+                    for (auto const& sep : _profile.StreamEndPoints()) {
+                        TRACE(AVDTPFlow, (_T("Stream endpoint #%i"), cnt++));
+                        TRACE(AVDTPFlow, (_T("  SEID: 0x%02x"), sep.SEID()));
+                        TRACE(AVDTPFlow, (_T("  Service Type: %s"), (sep.ServiceType() == Bluetooth::AVDTPProfile::StreamEndPoint::SINK? "Sink" : "Source")));
+                        TRACE(AVDTPFlow, (_T("  Media Type: %s"), (sep.MediaType() == Bluetooth::AVDTPProfile::StreamEndPoint::AUDIO? "Audio"
+                                                                    : (sep.MediaType() == Bluetooth::AVDTPProfile::StreamEndPoint::VIDEO? "Video" : "Multimedia"))));
+
+                        if (sep.Capabilities().empty() == false) {
+                            TRACE(AVDTPFlow, (_T("  Capabilities:")));
+                            for (auto const& caps : sep.Capabilities()) {
+                                TRACE(AVDTPFlow, (_T("    - %02x '%s', parameters: %s"), caps.second.Category(), caps.second.Name().c_str(),
+                                                  Bluetooth::Record(caps.second.Data()).ToString().c_str()));
+                            }
+                        }
+                    }
+                }
 
             private:
                 A2DPSink& _parent;
                 Exchange::IBluetooth::IDevice* _device;
                 Core::CriticalSection _lock;
                 Exchange::IBluetoothAudioSink::status _status;
+                Bluetooth::AVDTPSocket::Command _command;
+                Bluetooth::AVDTPProfile _profile;
+                std::list<SBCAudioSEP> _sbcAudioEndpoints;
             }; // class AudioReceiver
 
         public:
@@ -634,13 +848,15 @@ namespace Plugin {
                         } else if (_audioService.Type() == ServiceExplorer::AudioService::SINK) {
                             // We already know it's an audio sink, connect to transport service right away
                             TRACE(A2DPFlow, (_T("Audio sink device connected, start audio receiver...")));
-                            _receiver.Connect(_audioService.PSM());
+                            if (_receiver.Connect(_audioService.PSM()) == Core::ERROR_NONE) {
+                                _receiver.Discover();
+                            }
                         } else {
                             // It's not an audio sink device, can't do anything
                             TRACE(Trace::Information, (_T("Connected device does not feature an audio sink!")));
                         }
                     } else {
-                        TRACE(A2DPFlow, (_T("Device diconnected")));
+                        TRACE(A2DPFlow, (_T("Device disconnected")));
                         _audioService = ServiceExplorer::AudioService();
                         _explorer.Disconnect();
                         _receiver.Disconnect();
@@ -659,8 +875,6 @@ namespace Plugin {
         private:
             void AudioServices(const std::list<ServiceExplorer::AudioService>& services)
             {
-                ASSERT(services.empty() == false);
-
                 if (services.size() > 1) {
                     TRACE(Trace::Information, (_T("More than one audio sink available, using the first one!")));
                 }
@@ -676,7 +890,9 @@ namespace Plugin {
                                            _audioService.PSM(), std::bitset<8>(_audioService.Features()).to_string().c_str()));
 
                 TRACE(A2DPFlow, (_T("Audio sink device discovered, start audio receiver...")));
-                _receiver.Connect(_audioService.PSM());
+                if (_receiver.Connect(_audioService.PSM()) == Core::ERROR_NONE) {
+                    _receiver.Discover();
+                }
 
                 _lock.Unlock();
             }
