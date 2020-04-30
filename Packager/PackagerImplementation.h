@@ -46,7 +46,11 @@ namespace Plugin {
                 , MakeCacheVolatile(false)      // Use volatile cache. Volatile cache will be cleared on exit
                 , Verbosity()
                 , NoDeps()
+#ifndef PROVISION_SUPPORT_ENABLED
+                , NoSignatureCheck(true)
+#else
                 , NoSignatureCheck()
+#endif
                 , AlwaysUpdateFirst()
             {
                 Add(_T("config"), &ConfigFile);

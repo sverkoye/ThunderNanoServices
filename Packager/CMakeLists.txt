@@ -19,9 +19,9 @@ set(PLUGIN_NAME Packager)
 set(MODULE_NAME WPEFramework${PLUGIN_NAME})
 
 find_package(${NAMESPACE}Plugins REQUIRED)
-find_package(libprovision REQUIRED)
 find_package(LibOPKG REQUIRED)
 find_package(CompileSettingsDebug CONFIG REQUIRED)
+find_package(libprovision QUIET)
 
 add_library(${MODULE_NAME} SHARED
     Module.cpp
@@ -32,9 +32,18 @@ target_link_libraries(${MODULE_NAME}
     PRIVATE
         CompileSettingsDebug::CompileSettingsDebug
         ${NAMESPACE}Plugins::${NAMESPACE}Plugins
-        libprovision::libprovision
         LibOPKG::LibOPKG
         )
+if (libprovision_FOUND)
+   target_link_libraries(${MODULE_NAME}
+        PRIVATE
+            libprovision::libprovision
+        )
+   target_compile_definitions(${MODULE_NAME}
+        PRIVATE
+            PROVISION_SUPPORT_ENABLED
+        )
+endif()
 
 string(TOLOWER ${NAMESPACE} STORAGENAME)
 install(TARGETS ${MODULE_NAME} 
