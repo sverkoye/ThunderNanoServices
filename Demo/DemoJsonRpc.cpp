@@ -58,7 +58,7 @@ namespace Plugin {
         const string& name = params.Name.Value();
         const string& command = params.Command.Value();
 
-        TRACE_L1("name %s, command %s", name.c_str(), command.c_str());        
+        SYSLOG(Trace::Information, (_T("start demo name %s command %s"), name.c_str(), command.c_str()));
 
         return result;
     }
@@ -72,7 +72,7 @@ namespace Plugin {
         uint32_t result = Core::ERROR_NONE;
         const string& name = params.Name.Value();
 
-        TRACE_L1("name %s", name.c_str());        
+        SYSLOG(Trace::Information, (_T("stop demo name %s"), name.c_str()));
 
         return result;
     }
@@ -82,11 +82,15 @@ namespace Plugin {
     //  - ERROR_NONE: Success
     uint32_t Demo::get_demos(Core::JSON::ArrayType<Core::JSON::String>& response) const
     {
-        TRACE_L1("get_demos");
+        std::vector<std::string> v = {"Demo1", "Demo2", "Demo3"};
+        SYSLOG(Trace::Information, (_T("get_demos")));
 
-        response.Add(Core::JSON::String("demo1"));
-        response.Add(Core::JSON::String("demo2"));
-        response.Add(Core::JSON::String("demo3"));
+        for(auto it = v.begin(); it != v.end(); ++it)
+        {
+            Core::JSON::String newElement;
+            newElement = *it;
+            response.Add(newElement);
+        }
 
         return Core::ERROR_NONE;
     }
